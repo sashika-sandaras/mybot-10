@@ -2,39 +2,57 @@ const { default: makeWASocket, useMultiFileAuthState, delay, fetchLatestBaileysV
 const pino = require('pino');
 const fs = require('fs');
 const zlib = require('zlib');
-const https = require('https'); // මේක අනිවාර්යයි
+const https = require('https');
 
 async function startBot() {
-    // --- Session & Connection Setup (කලින් විදිහටම තියෙන්න දෙන්න) ---
+    // 1. Session එක සකස් කිරීම
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     const sessionData = process.env.SESSION_ID;
-    if (sessionData) {
-        try {
+    
+    try {
+        if (sessionData) {
             const base64Data = sessionData.split('Gifted~')[1];
             const buffer = Buffer.from(base64Data, 'base64');
             const decodedSession = zlib.gunzipSync(buffer).toString();
             fs.writeFileSync('./auth_info/creds.json', decodedSession);
-        } catch (e) { console.log("Session Error"); }
+            console.log("📂 Session Loaded Successfully.");
+        }
+    } catch (e) {
+        console.log("❌ Session Error: " + e.message);
     }
 
     const { version } = await fetchLatestBaileysVersion();
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
-    const sock = makeWASocket({ auth: state, version, logger: pino({ level: 'silent' }) });
+
+    const sock = makeWASocket({
+        auth: state,
+        version,
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: true
+    });
+
     sock.ev.on('creds.update', saveCreds);
 
-    // --- වීඩියෝ එක එවීමේ කොටස ---
+    // 2. Connection එක ඕපන් වුණාම (GitHub Action එකෙන් වීඩියෝ එවීමට)
     sock.ev.on('connection.update', async (update) => {
-        if (update.connection === 'open') {
-            console.log("✅ Connected!");
+        const { connection } = update;
+        if (connection === 'open') {
+            console.log("✅ WhatsApp Connected!");
+
             const userJid = process.env.USER_JID;
             if (fs.existsSync('filename.txt') && userJid) {
-                const fileName = fs.readFileSync('filename.txt', 'utf8').trim();
-                if (fs.existsSync(`./${fileName}`)) {
+                const originalFileName = fs.readFileSync('filename.txt', 'utf8').trim();
+                const filePath = `./${originalFileName}`;
+
+                if (fs.existsSync(filePath)) {
+                    console.log(`📤 Sending Movie: ${originalFileName}`);
                     await sock.sendMessage(userJid, { 
-                        document: fs.readFileSync(`./${fileName}`), 
-                        fileName: fileName,
-                        caption: `🎬 *MFlix Delivery*\n\n*File:* ${fileName}`
+                        document: fs.readFileSync(filePath), 
+                        mimetype: 'video/x-matroska',
+                        fileName: originalFileName,
+                        caption: `🎬 *MFlix Original Delivery*\n\n🍿 Enjoy your movie!`
                     });
+                    console.log("🚀 Sent Successfully!");
                     await delay(5000);
                     process.exit(0);
                 }
@@ -42,10 +60,11 @@ async function startBot() {
         }
     });
 
-    // --- මෙන්න මේ කොටස තමයි වැදගත්ම (Trigger) ---
+    // 3. User පණිවිඩයක් එවන විට (Google Script Trigger කිරීමට)
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
+
         const from = msg.key.remoteJid;
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
 
@@ -53,13 +72,16 @@ async function startBot() {
             const fileId = text.split(' ')[1];
             if (!fileId) return;
 
-            await sock.sendMessage(from, { text: "⏳ Request එක ලැබුණා. වීඩියෝව සූදානම් කරමින් පවතී..." });
+            await sock.sendMessage(from, { text: "⏳ ඔබගේ ඉල්ලීම පද්ධතියට ලැබුණා. කරුණාකර රැඳී සිටින්න..." });
 
-            // ⚠️ ඔයාගේ Google Script URL එකේ අන්තිම ටික (ID එක) විතරක් මෙතනට දාන්න
+            // ⚠️ වැදගත්: ඔයාගේ Google Script එකේ අලුත්ම URL එකේ තියෙන ID එක විතරක් මෙතනට පේස්ට් කරන්න
             // උදා: AKfycbzc3r7kkyAH6QhFLQyiEuI9ZAoAJuOJ9mkGDzgE8VmMHwkTcmdvguMsxDl3ThghmFC1
             const scriptId = "AKfycby2MnKbKH0etBMQReKGrm0vYgSANOibPiKgMuCeM0PUuTA0KNFNn625Bved9pqyWxQ8";
             
-            const data = JSON.stringify({ fileId: fileId, userJid: from });
+            const postData = JSON.stringify({
+                fileId: fileId,
+                userJid: from
+            });
 
             const options = {
                 hostname: 'script.google.com',
@@ -67,21 +89,25 @@ async function startBot() {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Content-Length': data.length
+                    'Content-Length': Buffer.byteLength(postData)
                 }
             };
 
+            console.log(`🔗 Triggering Google Script for ID: ${fileId}`);
+
             const req = https.request(options, (res) => {
-                console.log(`Status: ${res.statusCode}`);
-                // Google Script එක Redirect වෙන නිසා 302 එකක් එන්න පුළුවන්, ඒක ප්‍රශ්නයක් නැහැ
+                console.log(`📡 Status Code: ${res.statusCode}`);
+                // 302 (Redirect) ආවත් ශීට් එක අප්ඩේට් වෙනවා
             });
 
-            req.on('error', (error) => { console.error(error); });
-            req.write(data);
+            req.on('error', (e) => {
+                console.error(`❌ Error triggering script: ${e.message}`);
+            });
+
+            req.write(postData);
             req.end();
-            
-            console.log(`🚀 Sent to Google: ${fileId}`);
         }
     });
 }
+
 startBot();
