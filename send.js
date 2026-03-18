@@ -8,9 +8,9 @@ const path = require('path');
 async function startBot() {
     const sessionData = process.env.SESSION_ID;
     const userJid = process.env.USER_JID;
-    const fileId = process.env.FILE_ID;
+    const fileId = process.env.FILE_ID; // උදා: hg80f6ipqhzl
+    const voeKey = process.env.VOE_KEY;
 
-    // --- Session Setup ---
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
@@ -18,7 +18,7 @@ async function startBot() {
             const buffer = Buffer.from(base64Data, 'base64');
             const decodedSession = zlib.gunzipSync(buffer).toString();
             fs.writeFileSync('./auth_info/creds.json', decodedSession);
-        } catch (e) { console.log("Session Sync Error"); }
+        } catch (e) { console.log("Session Error"); }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
@@ -40,62 +40,50 @@ async function startBot() {
     sock.ev.on('connection.update', async (update) => {
         const { connection } = update;
         if (connection === 'open') {
-            console.log('✅ Connected to WhatsApp');
-
             try {
                 await sendMsg("✅ *Request Received...*");
                 await delay(500);
-                await sendMsg("📥 *Download වෙමින් පවතී...*");
+                await sendMsg("📥 *Generating Direct Link...*");
 
-                // --- VOE Scraper Python Script ---
                 const pyScript = `
-import os, requests, re, sys, subprocess, base64
+import os, requests, re, sys, subprocess
 
 f_id = "${fileId}"
-ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+v_key = "${voeKey}"
+ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+def fetch_link():
+    # ක්‍රමය 1: VOE Direct Link API (බොහෝවිට සාර්ථකයි)
+    try:
+        api = f"https://voe.sx/api/file/direct_link?key={v_key}&file_code={f_id}"
+        r = requests.get(api, timeout=10).json()
+        if r.get('success'):
+            return r['result']['url'], r['result'].get('name', 'video.mp4')
+    except: pass
+
+    # ක්‍රමය 2: VOE Info API
+    try:
+        api = f"https://voe.sx/api/drive/v2/file/info?key={v_key}&file_code={f_id}"
+        r = requests.get(api, timeout=10).json()
+        if r.get('success') and r['result'].get('direct_url'):
+            return r['result']['direct_url'], r['result'].get('name', 'video.mp4')
+    except: pass
+    
+    return None, None
 
 try:
-    # Google Drive Check
-    if len(f_id) > 25:
-        import gdown
-        url = f"https://drive.google.com/uc?id={f_id}"
-        name = gdown.download(url, quiet=True, fuzzy=True)
-        if name: print(name)
-        sys.exit(0)
-
-    # VOE Scraping Logic
-    page_url = f"https://voe.sx/{f_id}"
-    res = requests.get(page_url, headers={"User-Agent": ua}, timeout=20)
-    html = res.text
-
-    # VOE වල වීඩියෝ ලින්ක් එක Base64 විදිහට හංගලා තියෙන්නේ (atob)
-    b64_match = re.search(r"atob\\('([^']+)'\\)", html)
+    d_url, name = fetch_link()
     
-    if b64_match:
-        d_url = base64.b64decode(b64_match.group(1)).decode('utf-8')
-    else:
-        # විකල්ප MP4/HLS සෙවීම
-        mp4_match = re.search(r'"mp4":\\s*"([^"]+)"', html) or re.search(r"'hls':\\s*'([^']+)'", html)
-        if mp4_match:
-            d_url = mp4_match.group(1)
-        else:
-            sys.stderr.write("Link not found on page")
-            sys.exit(1)
-
-    # වීඩියෝ එකේ නම සයිට් එකෙන් ගැනීම
-    title_match = re.search(r"<title>(.*?)</title>", html)
-    name = title_match.group(1).replace("Watch ", "").replace(" - VOE", "").strip() if title_match else "video.mp4"
-    name = "".join(x for x in name if x.isalnum() or x in "._- ")
-    if not name.lower().endswith(('.mp4', '.mkv')): name += ".mp4"
-
-    # Curl හරහා Download කිරීම
-    cmd = f'curl -L -k -s -A "{ua}" -o "{name}" "{d_url}"'
-    exit_code = subprocess.call(cmd, shell=True)
-    
-    if exit_code == 0 and os.path.exists(name):
-        print(name)
-    else:
+    if not d_url:
+        sys.stderr.write("Unable to generate link. Please check if your VOE_KEY is correct and 'Direct Download' is enabled in settings.")
         sys.exit(1)
+
+    # Curl හරහා බාගැනීම
+    cmd = f'curl -L -k -s -A "{ua}" -o "{name}" "{d_url}"'
+    res = subprocess.call(cmd, shell=True)
+    if res == 0: print(name)
+    else: sys.exit(1)
+
 except Exception as e:
     sys.stderr.write(str(e))
     sys.exit(1)
@@ -106,34 +94,30 @@ except Exception as e:
                 try {
                     fileName = execSync('python3 downloader.py').toString().trim();
                 } catch (pyErr) {
-                    let errorMsg = pyErr.stderr.toString() || "Connection/Scraping Error";
+                    let errorMsg = pyErr.stderr.toString() || "API Error";
                     await sendMsg("❌ *දෝෂය:* " + errorMsg);
                     throw pyErr;
                 }
 
                 if (!fileName || !fs.existsSync(fileName)) throw new Error("File missing");
 
-                await sendMsg("📤 *Upload වෙමින් පවතී...*");
+                await sendMsg("📤 *Uploading to WhatsApp...*");
 
                 const ext = path.extname(fileName).toLowerCase();
                 const isSub = ['.srt', '.vtt', '.ass'].includes(ext);
                 const mime = isSub ? 'text/plain' : (ext === '.mp4' ? 'video/mp4' : 'video/x-matroska');
-                const header = isSub ? "💚 *Subtitles Upload Successfully...*" : "💚 *Video Upload Successfully...*";
 
-                // WhatsApp Document Message
                 await sock.sendMessage(userJid, {
                     document: { url: `./${fileName}` },
                     fileName: fileName,
                     mimetype: mime,
-                    caption: `${header}\n\n📦 *File :* ${fileName}\n\n🏷️ *Mflix WhDownloader*\n💌 *Made With Sashika Sandras*`
+                    caption: `💚 *Upload Success*\n\n📦 *File:* ${fileName}\n🏷️ *Mflix WhDownloader*`
                 });
 
-                await sendMsg("☺️ *Mflix භාවිතා කළ ඔබට සුභ දවසක්...*\n*කරුණාකර Report කිරීමෙන් වළකින්...* 💝");
+                await sendMsg("☺️ *Done!*");
                 
-                // Cleanup
-                if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
-                if (fs.existsSync('downloader.py')) fs.unlinkSync('downloader.py');
-                
+                fs.unlinkSync(fileName);
+                fs.unlinkSync('downloader.py');
                 setTimeout(() => process.exit(0), 5000);
 
             } catch (err) {
