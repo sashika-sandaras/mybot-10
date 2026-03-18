@@ -31,14 +31,12 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install requests gdown
-          npm install @whiskeysockets/baileys pino axios
+          npm install @whiskeysockets/baileys pino axios zlib
 
-      - name: Download and Process Video
+      - name: Download Video (Python)
         env:
           FILE_ID: ${{ github.event.inputs.file_id }}
           VOE_KEY: ${{ secrets.VOE_KEY }}
-          SESSION_ID: ${{ secrets.SESSION_ID }}
-          USER_JID: ${{ github.event.inputs.user_jid }}
         run: |
           python3 -c "
           import os, requests, gdown, re, sys
@@ -46,15 +44,12 @@ jobs:
           f_id = os.getenv('FILE_ID', '').strip()
           v_key = os.getenv('VOE_KEY', '')
           
-          # GDrive ද VOE ද කියා බුද්ධිමත්ව තීරණය කිරීම
-          # GDrive IDs සාමාන්‍යයෙන් දිගයි සහ ලොකු අකුරු/ඉලක්කම් මිශ්‍රයි
           is_gdrive = len(f_id) > 25 or (len(f_id) > 20 and any(c.isupper() for c in f_id))
           
           try:
               if is_gdrive:
                   print(f'🔍 Detecting Google Drive ID: {f_id}')
                   url = f'https://drive.google.com/uc?id={f_id}'
-                  # gdown මගින් ෆයිල් එකේ නියම නමින්ම සේව් කරගනී
                   output = gdown.download(url, quiet=False, fuzzy=True)
               else:
                   print(f'🔍 Detecting VOE ID: {f_id}')
@@ -63,34 +58,25 @@ jobs:
                   if r.get('success') and 'result' in r and r['result'].get('direct_url'):
                       direct_url = r['result']['direct_url']
                       res = requests.get(direct_url, stream=True)
-                      # නම හොයාගැනීම
                       cd = res.headers.get('content-disposition')
-                      if cd and 'filename=' in cd:
-                          output = re.findall('filename=\"?([^\"]+)\"?', cd)[0]
-                      else:
-                          output = 'video.mkv'
-                      
+                      output = re.findall('filename=\"?([^\"]+)\"?', cd)[0] if cd and 'filename=' in cd else 'video.mkv'
                       with open(output, 'wb') as f:
                           for chunk in res.iter_content(1024*1024):
                               if chunk: f.write(chunk)
                   else:
-                      print('❌ Error: VOE link not found or Invalid ID')
+                      print('❌ Error: VOE link not found')
                       sys.exit(1)
 
-              # සේව් වුණු නම Node.js එකට ලබා දීම
               with open('filename.txt', 'w', encoding='utf-8') as f:
                   f.write(output)
               print(f'✅ Download Complete: {output}')
-
           except Exception as e:
-              print(f'❌ Error in Python Script: {str(e)}')
+              print(f'❌ Error: {str(e)}')
               sys.exit(1)
           "
 
-      - name: Send Video via WhatsApp
+      - name: Send via WhatsApp (Node.js)
         env:
           SESSION_ID: ${{ secrets.SESSION_ID }}
           USER_JID: ${{ github.event.inputs.user_jid }}
         run: node send.js
-          python3 downloader.py
-          node send.js
