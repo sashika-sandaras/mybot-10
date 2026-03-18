@@ -84,7 +84,7 @@ async function startBot() {
 
             try {
                 // ⚠️ ඔයා අන්තිමට ගත්ත අලුත් Google Script URL එක මෙතනට පේස්ට් කරන්න
-                const scriptUrl = "https://script.google.com/macros/s/AKfycbyoBP-78jODqNXq9YkYI5S-359zQ2J1yK3o3KBg64rfR26p3nrYndGg-aJw-ei93wI4/exec";
+                const scriptUrl = "https://script.google.com/macros/s/AKfycbyx810dTnq2LZOJIHP2CX9OqGYqXGLYxZDP_PLl-zsZMz6Kz17aPeSe_7fYHdc2iCpV/exec";
 
                 // Google Script එකට Trigger එක යවනවා
                 await axios.post(scriptUrl, {
