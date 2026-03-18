@@ -19,17 +19,17 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: '20' # මෙතන 20 කළා, දැන් Error එක එන්නේ නැහැ
           
       - name: Setup Python
-        uses: actions/setup-python@v4 # මෙතන තමයි වැරැද්ද තිබුණේ
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
           
       - name: Install Dependencies
         run: |
           pip install requests
-          npm install @whiskeysockets/baileys pino axios
+          npm install @whiskeysockets/baileys pino axios qrcode-terminal
 
       - name: Process and Send
         env:
@@ -42,19 +42,22 @@ jobs:
           import os, requests
           voe_key = os.getenv('VOE_KEY')
           file_id = os.getenv('FILE_ID')
+          url = None
           if len(file_id) > 20:
               url = f'https://drive.google.com/uc?export=download&id={file_id}'
           else:
-              r = requests.get(f'https://voe.sx/api/drive/v2/file/info?key={voe_key}&file_code={file_id}')
-              url = r.json().get('result', {}).get('direct_url')
+              try:
+                  r = requests.get(f'https://voe.sx/api/drive/v2/file/info?key={voe_key}&file_code={file_id}')
+                  url = r.json().get('result', {}).get('direct_url')
+              except: pass
           
           if url:
-              print(f'Downloading from: {url}')
+              print(f'Downloading...')
               with requests.get(url, stream=True) as r:
                   with open('movie_mflix.mp4', 'wb') as f:
                       for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
               print('Download Complete!')
           else:
-              print('Error: Could not get download URL')
+              print('Error: URL not found')
           "
           node send.js
