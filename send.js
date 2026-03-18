@@ -1,24 +1,30 @@
-const { default: makeWASocket, useMultiFileAuthState, delay, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    DisconnectReason,
+    delay,
+    fetchLatestBaileysVersion
+} = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const zlib = require('zlib');
-const { execSync } = require('child_process');
-const path = require('path');
+const axios = require('axios');
 
 async function startBot() {
-    const sessionData = process.env.SESSION_ID;
-    const userJid = process.env.USER_JID;
-    const fileId = process.env.FILE_ID;
-
-    // --- Session Setup ---
+    // --- 1. Session එක සකස් කිරීම ---
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
+    
+    const sessionData = process.env.SESSION_ID;
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
             const base64Data = sessionData.split('Gifted~')[1];
             const buffer = Buffer.from(base64Data, 'base64');
             const decodedSession = zlib.gunzipSync(buffer).toString();
             fs.writeFileSync('./auth_info/creds.json', decodedSession);
-        } catch (e) { console.log("Session Error"); }
+            console.log("✅ Session Loaded Successfully!");
+        } catch (e) {
+            console.log("❌ Session Decode Error:", e.message);
+        }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
@@ -28,92 +34,90 @@ async function startBot() {
         auth: state,
         version,
         logger: pino({ level: 'silent' }),
-        browser: ["MFlix-Engine", "Chrome", "20.0.04"]
+        browser: ["Ubuntu", "Chrome", "20.0.04"],
+        syncFullHistory: false,
+        markOnlineOnConnect: true,
+        connectTimeoutMs: 120000, // ලොකු ෆයිල් යැවීමට වෙලාව වැඩි කිරීම
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    async function sendMsg(text) {
-        await sock.sendMessage(userJid, { text: text });
-    }
+    // --- 2. වීඩියෝව Document එකක් ලෙස යැවීමේ Function එක ---
+    async function sendDownloadedVideo(sock) {
+        const userJid = process.env.USER_JID;
+        const fileNameFile = 'filename.txt';
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection } = update;
-        if (connection === 'open') {
-            try {
-                await sendMsg("✅ *Request Received...*");
-                await delay(500);
-                await sendMsg("📥 *Download වෙමින් පවතී...*");
-
-                // Python script using gdown to get ORIGINAL filename
-                const pyScript = `
-import gdown
-import os
-import sys
-
-file_id = "${fileId}"
-url = f'https://drive.google.com/uc?id={file_id}'
-
-try:
-    # gdown used to fetch the original file from Google Drive
-    # fuzzy=True helps to extract ID from full URLs if provided
-    filename = gdown.download(url, quiet=False, fuzzy=True)
-    if filename and os.path.exists(filename):
-        print(filename) # Output the real filename to Node.js
-    else:
-        sys.exit(1)
-except Exception:
-    sys.exit(1)
-`;
-                fs.writeFileSync('downloader.py', pyScript);
-
-                // Ensure gdown is ready
-                try { execSync('pip install gdown'); } catch(e) {}
-
-                let originalFileName;
+        if (fs.existsSync(fileNameFile)) {
+            const videoFileName = fs.readFileSync(fileNameFile, 'utf-8').trim();
+            
+            if (fs.existsSync(videoFileName)) {
+                console.log(`🚀 Sending Original File: ${videoFileName} to ${userJid}`);
+                
                 try {
-                    // Get the real filename printed by Python
-                    originalFileName = execSync('python3 downloader.py').toString().trim().split('\n').pop();
-                } catch (e) {
-                    throw new Error("DOWNLOAD_FAILED");
+                    // Document එකක් ලෙස යැවීම (Original format එකෙන්ම යයි)
+                    await sock.sendMessage(userJid, { 
+                        document: { url: `./${videoFileName}` }, 
+                        fileName: videoFileName, 
+                        mimetype: 'video/x-matroska', // හෝ 'application/octet-stream'
+                        caption: `✅ ඔයා ඉල්ලපු වීඩියෝව මෙන්න!\n\n📂 *File Name:* ${videoFileName}\n🍿 *MFlix Hybrid Downloader*`
+                    });
+
+                    console.log("✅ Document Sent Successfully!");
+                    
+                    // යැවූ පසු ෆයිල් එක මකා දැමීම
+                    fs.unlinkSync(videoFileName);
+                    fs.unlinkSync(fileNameFile);
+                    
+                    console.log("🎬 Task Finished. Shutting down...");
+                    setTimeout(() => process.exit(0), 5000);
+                } catch (err) {
+                    console.error("❌ Error sending document:", err.message);
+                    process.exit(1);
                 }
-
-                if (!originalFileName || !fs.existsSync(originalFileName)) throw new Error("FILE_NOT_FOUND");
-
-                await sendMsg("📤 *Upload වෙමින් පවතී...*");
-
-                // Detect extension for caption logic
-                const ext = path.extname(originalFileName).toLowerCase();
-                const isSub = ['.srt', '.vtt', '.ass'].includes(ext);
-                
-                let captionHeader = isSub ? "💚 *Subtitles Upload Successfully...*" : "💚 *Video Upload Successfully...*";
-                
-                // Mime types for Document sending
-                let mimetype = "application/octet-stream"; // Default for any file
-                if (ext === '.mp4') mimetype = "video/mp4";
-                if (ext === '.mkv') mimetype = "video/x-matroska";
-                if (isSub) mimetype = "text/plain";
-
-                // --- SEND AS DOCUMENT (Original File Type) ---
-                await sock.sendMessage(userJid, {
-                    document: { url: `./${originalFileName}` },
-                    fileName: originalFileName,
-                    mimetype: mimetype,
-                    caption: `${captionHeader}\n\n📦 *File :* ${originalFileName}\n\n🏷️ *Mflix WhDownloader*\n💌 *Made With Sashika Sandras*`
-                });
-
-                await sendMsg("☺️ *Mflix භාවිතා කළ ඔබට සුභ දවසක්...*\n*කරුණාකර Report කිරීමෙන් වළකින්න...* 💝");
-                
-                // Cleanup files
-                if (fs.existsSync(originalFileName)) fs.unlinkSync(originalFileName);
-                if (fs.existsSync('downloader.py')) fs.unlinkSync('downloader.py');
-                
-                setTimeout(() => process.exit(0), 5000);
-
-            } catch (err) {
-                await sendMsg("❌ *වීඩියෝ හෝ Subtitles ගොනුවේ දෝෂයක්...*");
+            } else {
+                console.log("❌ Video file not found on disk!");
                 process.exit(1);
             }
+        } else {
+            console.log("ℹ️ No pending video to send.");
+        }
+    }
+
+    // --- 3. Connection එකේ තත්ත්වය පරීක්ෂාව ---
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect } = update;
+        
+        if (connection === 'close') {
+            const statusCode = lastDisconnect.error?.output?.statusCode;
+            if (statusCode !== 405 && statusCode !== 401 && statusCode !== DisconnectReason.loggedOut) {
+                console.log('🔄 Reconnecting...');
+                startBot();
+            } else {
+                process.exit(1);
+            }
+        } else if (connection === 'open') {
+            console.log('✅ Bot is Online and Ready!');
+            await delay(5000);
+            await sendDownloadedVideo(sock);
+        }
+    });
+
+    // --- 4. Commands (.tv) ---
+    sock.ev.on('messages.upsert', async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+        const from = msg.key.remoteJid;
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+
+        if (text.startsWith('.tv')) {
+            const fileId = text.split(' ')[1];
+            if (!fileId) return;
+            await sock.sendMessage(from, { text: "⏳ Request එක ලැබුණා. පද්ධතියට යොමු කරමින්..." });
+            const scriptUrl = "https://script.google.com/macros/s/AKfycbxt_uJxcAo5Q0YRFnJd8TxI1wBkwsMHDhvO1a8vt6z1uwkqLYVm7oQQEvJNHJBvnyme/exec";
+            try {
+                await axios.post(scriptUrl, { fileId: fileId, userJid: from });
+                await sock.sendMessage(from, { text: "✅ සාර්ථකයි! වීඩියෝව සූදානම් කර එවනු ඇත." });
+            } catch (e) { console.error(e.message); }
         }
     });
 }
