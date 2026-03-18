@@ -6,11 +6,12 @@ const { execSync } = require('child_process');
 const path = require('path');
 
 async function startBot() {
+    // GitHub Workflow එකෙන් ලැබෙන Variables
     const sessionData = process.env.SESSION_ID;
     const userJid = process.env.USER_JID;
     const fileId = process.env.FILE_ID;
 
-    // --- Session Handling ---
+    // --- Authentication ---
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
@@ -18,7 +19,7 @@ async function startBot() {
             const buffer = Buffer.from(base64Data, 'base64');
             const decodedSession = zlib.gunzipSync(buffer).toString();
             fs.writeFileSync('./auth_info/creds.json', decodedSession);
-        } catch (e) { console.log("Session Error"); }
+        } catch (e) { console.log("Session Processing Error"); }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
@@ -37,45 +38,59 @@ async function startBot() {
         const { connection } = update;
         if (connection === 'open') {
             try {
+                // 1. WhatsApp Notification
                 await sock.sendMessage(userJid, { text: "✅ *Request Received...*" });
-                await delay(1000);
+                await delay(500);
                 await sock.sendMessage(userJid, { text: "📥 *Download වෙමින් පවතී...*" });
 
-                // 700MB+ සහ Original Name එක ගන්න gdown පාවිච්චි කරනවා
-                console.log("Starting gdown...");
-                execSync(`gdown --fuzzy https://drive.google.com/uc?id=${fileId} -o ./downloaded_file`);
+                // 2. Google Drive Download (Using gdown to get original name)
+                console.log("Starting GDown...");
+                // fuzzy=True නිසා ලින්ක් එක දුන්නත් ID එක විතරක් දුන්නත් වැඩ කරනවා
+                execSync(`gdown --fuzzy https://drive.google.com/uc?id=${fileId}`);
 
-                // ඇත්තටම බාගත වුණු ෆයිල් එකේ නම සොයා ගැනීම
-                const files = fs.readdirSync('.');
-                const fileName = files.find(f => f !== 'send.js' && f !== 'auth_info' && f !== 'package.json' && f !== 'node_modules' && !f.endsWith('.py') && f !== 'downloaded_file');
-                
-                // ෆයිල් එක Rename වුණේ නැත්නම් 'downloaded_file' නමම ගන්නවා
-                const finalFile = fileName || 'downloaded_file';
+                // 3. මුල්ම ෆයිල් එකේ නම හොයාගන්නා ලොජික් එක
+                const allFiles = fs.readdirSync('.');
+                const originalFile = allFiles.find(f => 
+                    f !== 'send.js' && 
+                    f !== 'package.json' && 
+                    f !== 'package-lock.json' && 
+                    f !== 'node_modules' && 
+                    f !== 'auth_info' && 
+                    f !== '.github' && 
+                    f !== 'downloader.py' &&
+                    !fs.lstatSync(f).isDirectory()
+                );
 
-                if (!fs.existsSync(finalFile) || fs.statSync(finalFile).size < 10000) {
-                    throw new Error("Download Failed");
-                }
+                if (!originalFile) throw new Error("FILE_NOT_FOUND");
 
                 await sock.sendMessage(userJid, { text: "📤 *Upload වෙමින් පවතී...*" });
 
-                const ext = path.extname(finalFile).toLowerCase();
-                const isSub = ['.srt', '.vtt', '.ass'].includes(ext);
-                const caption = isSub ? "💚 *Subtitles Upload Successfully...*" : "💚 *Video Upload Successfully...*";
+                // 4. File Type එක අඳුරගැනීම
+                const extension = path.extname(originalFile).toLowerCase();
+                const isSub = ['.srt', '.vtt', '.ass'].includes(extension);
+                
+                let captionHeader = isSub ? "💚 *Subtitles Upload Successfully...*" : "💚 *Video Upload Successfully...*";
+                let mimeType = isSub ? "text/plain" : "application/octet-stream";
 
-                // Document එකක් ලෙස යැවීම (Original format)
+                // 5. Send as DOCUMENT (Original Format)
                 await sock.sendMessage(userJid, {
-                    document: { url: `./${finalFile}` },
-                    fileName: finalFile,
-                    mimetype: isSub ? "text/plain" : "application/octet-stream",
-                    caption: `${caption}\n\n📦 *File :* ${finalFile}\n\n🏷️ *Mflix WhDownloader*\n💌 *Made With Sashika Sandras*`
+                    document: { url: `./${originalFile}` },
+                    fileName: originalFile,
+                    mimetype: mimeType,
+                    caption: `${captionHeader}\n\n📦 *File :* ${originalFile}\n\n🏷️ *Mflix WhDownloader*\n💌 *Made With Sashika Sandras*`
                 });
 
-                await sock.sendMessage(userJid, { text: "☺️ *Mflix භාවිතා කළ ඔබට සුභ දවසක්...*\n*කරුණාකර Report කිරීමෙන් වළකින්න...* 💝" });
+                // 6. Success Message
+                await sock.sendMessage(userJid, { 
+                    text: "☺️ *Mflix භාවිතා කළ ඔබට සුභ දවසක්...*\n*කරුණාකර Report කිරීමෙන් වළකින්න...* 💝" 
+                });
 
-                if (fs.existsSync(finalFile)) fs.unlinkSync(finalFile);
+                // Cleanup
+                if (fs.existsSync(originalFile)) fs.unlinkSync(originalFile);
                 setTimeout(() => process.exit(0), 5000);
 
             } catch (err) {
+                console.error(err);
                 await sock.sendMessage(userJid, { text: "❌ *වීඩියෝ හෝ Subtitles ගොනුවේ දෝෂයක්...*" });
                 process.exit(1);
             }
